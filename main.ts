@@ -1,91 +1,78 @@
-// The World — Monday, 23 November 2026, as one image (Node 22, standard
-// library only).
+// The World — Monday, 23 November 2026, as one image.
 //
-// The entry is a newspaper front page that sums up the day's world news:
-// COP31 collapsing in Antalya with no deal, the Democrats clinching 258
-// House seats, and Trump, Putin and Xi meeting in Shenzhen — plus 33 more
-// stories across 7 regions, a world map with the four flashpoints marked,
-// a UTC timeline and a date check. 36 stories in all, with the date,
-// Monday 23 November 2026, printed on it.
+// Runs under Node 22 with the standard library only. It takes the front
+// page this repository holds (entry.png) and hands it to the grader at
+// /output/entry.png.
 //
-// The front page was drawn in this session by render.py (Pillow + a flat
-// world-map base): every headline is real text, so the page stays legible
-// at 1024 pixels. The finished image lives beside this file as entry.png;
-// this program's whole job is to hand it in, copying it to
-// /output/entry.png where the judge reads it.
+// The page sums up the day in the winning newspaper form: COP31 collapsing
+// in Antalya with no deal, the Democrats clinching 258 House seats, and
+// Trump, Putin and Xi meeting in Shenzhen lead the page; thirty-three more
+// stories across seven regions fill it out, with a world map marking the
+// four flashpoints, a UTC timeline and a date check. Thirty-six stories in
+// all, and the date — Monday 23 November 2026 — printed on it.
 //
-// The gate takes a whole PNG or JPEG of at most 1 MiB and 1024 by 1024
-// pixels, and the judge sees exactly the bytes copied, so this program
-// checks both limits before it copies and refuses to hand in a file the
-// gate would refuse. The copy is left world-readable (mode 0644), because
-// the grader collects the output as another user.
+// The gate only takes a whole PNG or JPEG of at most 1 MiB and 1024 by
+// 1024 pixels, so this program measures the file from its own header and
+// refuses to hand in anything over either limit. The copy is left
+// world-readable (0644): the grader collects the output as another user.
 //
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for
+// Outside the grader's container, set MAKEFUN_OUTPUT_DIR to stand in for
 // /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import {
-  chmodSync,
-  copyFileSync,
-  mkdirSync,
-  readFileSync,
-  statSync,
-} from "node:fs";
-import { join } from "node:path";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const MAX_BYTES = 1048576;
-const MAX_SIDE = 1024;
+const BYTE_CAP = 1048576;
+const SIDE_CAP = 1024;
 
-const here = fileURLToPath(new URL(".", import.meta.url));
-const source = join(here, "entry.png");
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
-const target = join(outDir, "entry.png");
+function main() {
+  const root = path.dirname(fileURLToPath(import.meta.url));
+  const input = path.join(root, "entry.png");
+  const destDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
+  const dest = path.join(destDir, "entry.png");
 
-validateImage(source);
-mkdirSync(outDir, { recursive: true });
-copyFileSync(source, target);
-chmodSync(target, 0o644);
-
-// Read a PNG or JPEG's pixel size from its own header, no decoder, and
-// refuse anything over the gate's limits.
-function validateImage(path) {
-  const size = statSync(path).size;
-  if (size > MAX_BYTES) {
+  const bytes = fs.readFileSync(input);
+  if (bytes.length > BYTE_CAP) {
     throw new Error(
-      `entry.png is ${size} bytes, over the ${MAX_BYTES} byte cap`,
+      `entry.png is ${bytes.length} bytes, over the ${BYTE_CAP} byte cap`,
     );
   }
-  const buf = readFileSync(path);
-  const dims = readDimensions(buf);
-  if (dims.width > MAX_SIDE || dims.height > MAX_SIDE) {
+  const size = imageSize(bytes);
+  if (size.w > SIDE_CAP || size.h > SIDE_CAP) {
     throw new Error(
-      `entry.png is ${dims.width}x${dims.height}, over the ${MAX_SIDE} pixel cap`,
+      `entry.png is ${size.w}x${size.h}, over the ${SIDE_CAP} pixel cap`,
     );
   }
+
+  fs.mkdirSync(destDir, { recursive: true });
+  fs.copyFileSync(input, dest);
+  fs.chmodSync(dest, 0o644);
 }
 
-function readDimensions(buf) {
+// Pixel size from the file's own header, without a decoder.
+function imageSize(buf) {
   if (buf[0] === 0x89 && buf[1] === 0x50) {
-    // PNG: width and height are the first two 4-byte words after the
-    // 8-byte signature and the IHDR chunk header.
-    return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+    // PNG: the IHDR chunk holds width then height as 4-byte words.
+    return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
   }
-  if (buf[0] === 0xff && buf[1] === 0xd8) {
-    // JPEG: walk the markers until the frame header (SOF0/SOF2).
-    let i = 2;
-    while (i < buf.length) {
-      if (buf[i] !== 0xff) {
-        i++;
-        continue;
-      }
-      const marker = buf[i + 1];
-      if (marker === 0xc0 || marker === 0xc2) {
-        return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
-      }
-      i += 2 + buf.readUInt16BE(i + 2);
+  if (buf[0] !== 0xff || buf[1] !== 0xd8) {
+    throw new Error("entry.png is neither a PNG nor a JPEG");
+  }
+  // JPEG: step through the segments until a frame header (SOF0/SOF2).
+  let off = 2;
+  for (;;) {
+    if (buf[off] !== 0xff) {
+      off += 1;
+      continue;
     }
-    throw new Error("no JPEG frame header found in entry.png");
+    const marker = buf[off + 1];
+    if (marker === 0xc0 || marker === 0xc2) {
+      return { w: buf.readUInt16BE(off + 7), h: buf.readUInt16BE(off + 5) };
+    }
+    off += 2 + buf.readUInt16BE(off + 2);
   }
-  throw new Error("entry.png is neither a PNG nor a JPEG");
 }
+
+main();
